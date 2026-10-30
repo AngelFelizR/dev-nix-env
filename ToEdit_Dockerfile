@@ -1,0 +1,132 @@
+# =============================================================================
+#  TO EDIT — customize this file for each new project.
+#  ---------------------------------------------------------------------------
+#  WHAT TO CHANGE:
+#    1. WORKDIR (line below): /home/dev/myproject -> /home/dev/<your-project>.
+#    2. Timezone ("Timezone" block): currently America/Santo_Domingo. Set your
+#       own (affects Sys.timezone() in R).
+#    3. The container uses the `dev` user with UID 1000 (= your `id -u`). If
+#       yours differs, change 1000 here, in entrypoint.sh and in docker-compose.
+#  When done, rename: ToEdit_Dockerfile -> Dockerfile
+# =============================================================================
+# Private dev container (gitignored; never committed).
+# Runtime-only image: the Nix closures are assembled OUTSIDE docker build by
+# ./build-image.sh (persistent volume, so adding a package does not recompile
+# R) and land here as dist/closure.tar.gz. Base is nixos/nix, so Nix itself
+# is in the image; everything else is the closure of nix/system.nix (slim R,
+# quarto, python+jupyter, git, openssh) plus nix/r-book.nix (R packages).
+#
+#   ./build-image.sh     # build this image (run it, do not docker build)
+#   ./setup.sh           # start the stack and install your SSH key
+#   ssh <Host>           # repo at /home/dev/<project>
+#
+# R packages live in nix/r-book.nix: edit it and rerun ./build-image.sh.
+# install.packages() cannot work here -- slim R ships no compiler on PATH.
+
+ARG NIX_IMAGE=nixos/nix:2.35.2
+
+FROM ${NIX_IMAGE}
+
+# sandbox=false: nested user namespaces are not available inside Docker.
+# The substituters let `nix-shell` on the mounted repo (adding a package)
+# download instead of recompiling the world. The lines come from nix/nix.conf
+# (single source, shared with build-image.sh) via dist/.
+COPY dist/nix.conf /tmp/nix.conf
+RUN cat /tmp/nix.conf >> /etc/nix/nix.conf && rm /tmp/nix.conf
+
+# The tarball is bind-mounted, never COPY'd: as a COPY layer the ~1 GB file
+# stayed inside the image even after `rm`. BuildKit mounts build-context files
+# read-only for the RUN and commits only the extracted tree -> one layer
+# instead of two, ~1 GB smaller image.
+RUN --mount=type=bind,source=dist/closure.tar.gz,target=/tmp/closure.tar.gz \
+    tar -C / -xzf /tmp/closure.tar.gz
+
+# Register the extracted paths in the nix db: without this, nix inside the
+# container would consider R and every package missing and rebuild them on
+# the first `nix-shell`.
+COPY dist/db.dump /tmp/db.dump
+RUN nix-store --load-db < /tmp/db.dump && rm /tmp/db.dump
+
+# /opt/system = tools + languages; /opt/r = R packages; /opt/positron-libs =
+# the FHS-ish lib dir the Positron REH launcher patchelfs its bundled node
+# against (built by nix/positron-libs.nix; no version-globs here).
+COPY dist/out-system.path /tmp/out-system.path
+COPY dist/out-rbook.path /tmp/out-rbook.path
+COPY dist/out-positron.path /tmp/out-positron.path
+RUN mkdir -p /opt && \
+    ln -s "$(cat /tmp/out-system.path)" /opt/system && \
+    ln -s "$(cat /tmp/out-rbook.path)" /opt/r && \
+    ln -s "$(cat /tmp/out-positron.path)" /opt/positron-libs && \
+    rm /tmp/out-system.path /tmp/out-rbook.path /tmp/out-positron.path
+
+# Positron Remote SSH: its server bootstrap reads /etc/os-release (absent
+# here) and check-requirements.sh aborts without a glibc it recognises.
+# ID=nixos is an official escape hatch in that script ("NixOS detected,
+# skipping GLIBC check").
+RUN zi="$(ls -d /nix/store/*-tzdata-*/share/zoneinfo | head -1)" && \
+    mkdir -p /nix/var/nix/profiles/share && \
+    ln -sfn "$zi" /usr/share/zoneinfo && \
+    # Timezone: timechange (via lubridate, loaded by tidymodels) probes
+    # /etc/localtime and warns "Your system is mis-configured" without it.
+    # TO EDIT: set your timezone.
+    ln -sfn "$zi/America/Santo_Domingo" /etc/localtime && \
+    printf '%s\n' \
+      'ID=nixos' \
+      'NAME="NixOS"' \
+      'VERSION="24.05 (Uakari)"' \
+      'PRETTY_NAME="NixOS 24.05"' \
+      > /etc/os-release
+
+# Rprofile.site blocks install.packages()/update.packages() on purpose (see
+# README). R_PROFILE points R at it in both `docker exec` and ssh sessions.
+COPY Rprofile.site /opt/Rprofile.site
+
+# The VSCODE_SERVER_* vars are for Positron Remote SSH: the REH launcher
+# patchelfs its bundled node against the closure's glibc with them, and the
+# requirements check skips itself when the first one is set.
+ENV PATH="/opt/system/bin:${PATH}" \
+    LOCALE_ARCHIVE="/opt/system/lib/locale/locale-archive" \
+    LANG="en_US.UTF-8" \
+    LC_ALL="en_US.UTF-8" \
+    FONTCONFIG_FILE="/opt/system/etc/fonts/fonts.conf" \
+    FONTCONFIG_PATH="/opt/system/etc/fonts" \
+    XDG_DATA_DIRS="/opt/system/share" \
+    R_LIBS_SITE="/opt/r/library" \
+    R_PROFILE="/opt/Rprofile.site" \
+    VSCODE_SERVER_CUSTOM_GLIBC_LINKER="/opt/positron-libs/ld-linux-x86-64.so.2" \
+    VSCODE_SERVER_CUSTOM_GLIBC_PATH="/opt/positron-libs" \
+    VSCODE_SERVER_PATCHELF_PATH="/opt/system/bin/patchelf"
+
+# sshd gives sessions its own PATH (/usr/bin:/bin), not the image's ENV, so
+# the closure's binaries are also reachable from there via symlinks. The
+# host key is baked BEFORE the entrypoint below: touching the entrypoint
+# must not regenerate it (that would churn the host's known_hosts).
+# The login user is `dev` (uid 1000, created at runtime by entrypoint.sh),
+# so session files live under /home/dev, not /root.
+RUN mkdir -p /usr/bin && \
+    for f in /opt/system/bin/* /root/.nix-profile/bin/*; do ln -sf "$f" /usr/bin/; done && \
+    mkdir -p /etc/ssh /home/dev/.ssh && \
+    /opt/system/bin/ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key && \
+    chown -R 1000:1000 /home/dev && \
+    chmod 700 /home/dev/.ssh && \
+    printf '%s\n' \
+      'R_LIBS_SITE=/opt/r/library' \
+      'R_PROFILE=/opt/Rprofile.site' \
+      'LOCALE_ARCHIVE=/opt/system/lib/locale/locale-archive' \
+      'LANG=en_US.UTF-8' \
+      'LC_ALL=en_US.UTF-8' \
+      'FONTCONFIG_FILE=/opt/system/etc/fonts/fonts.conf' \
+      'FONTCONFIG_PATH=/opt/system/etc/fonts' \
+      'XDG_DATA_DIRS=/opt/system/share' \
+      'VSCODE_SERVER_CUSTOM_GLIBC_LINKER=/opt/positron-libs/ld-linux-x86-64.so.2' \
+      'VSCODE_SERVER_CUSTOM_GLIBC_PATH=/opt/positron-libs' \
+      'VSCODE_SERVER_PATCHELF_PATH=/opt/system/bin/patchelf' \
+      > /home/dev/.ssh/environment && \
+    chmod 600 /home/dev/.ssh/environment
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+WORKDIR /home/dev/myproject
+CMD ["/entrypoint.sh"]

@@ -1,0 +1,33 @@
+# =============================================================================
+#  TO EDIT — customize for each project. When done, rename:
+#           ToEdit_docker-compose.yml -> docker-compose.yml
+#  ---------------------------------------------------------------------------
+#  WHAT TO CHANGE (replace `myproject` with your project name):
+#    1. image / container_name: myproject-dev:latest / myproject-dev.
+#    2. ports: pick a free port on your host. NOTE: 2222-2225 are usually
+#       taken on this machine; use e.g. "127.0.0.1:2226:22".
+#    3. volumes: change ".:/home/dev/myproject" to your repo's path.
+#    4. volumes.positron-server.name: myproject-positron-server.
+# =============================================================================
+# Private dev compose (dev container + the repo mounted). Gitignored: this is
+# the developer's local environment, not part of the project repository.
+services:
+  myproject:
+    build:
+      context: .
+    image: myproject-dev:latest
+    container_name: myproject-dev
+    ports:
+      # Loopback only: SSH into a container that mounts the whole repo.
+      - "127.0.0.1:2222:22"
+    volumes:
+      - .:/home/dev/myproject
+      # Positron Remote SSH unpacks its server binary here (~1.5 GB); a
+      # named volume keeps it out of the image and across container
+      # recreations. Seeded from the client's matching reh tarball.
+      - positron-server:/home/dev/.positron-server
+
+volumes:
+  positron-server:
+    name: myproject-positron-server
+    external: true

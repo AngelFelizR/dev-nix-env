@@ -1,0 +1,5 @@
+# Output of ./build-image.sh (always regenerated; the tarball is ~1 GB).
+dist/
+
+# macOS
+*.DS_Store

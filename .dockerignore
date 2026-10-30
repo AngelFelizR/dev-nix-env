@@ -1,0 +1,7 @@
+# The build context is the tarball produced by ./build-image.sh plus the
+# sshd entrypoint. Everything else in the repo is mounted at run time.
+*
+!dist/
+!dist/**
+!entrypoint.sh
+!Rprofile.site

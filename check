@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Checks that the PIN is consistent between files before building.
+# Run it after renaming the ToEdit_* files:  ./check
+#
+# The classic failure: you change the pin date in nix/pkgs.nix and forget the
+# URL (or the sha256) in nix/system.nix (or vice versa). This detects it.
+set -euo pipefail
+
+die() { echo "check: $*" >&2; exit 1; }
+
+url_re='https://github.com/[^/]+/nixpkgs/archive/[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.gz'
+sha_re='sha256 = "([0-9a-z]+)"'
+
+pkgs_url=$(grep -oE "$url_re" nix/pkgs.nix | head -1)
+sys_url=$(grep -oE "$url_re" nix/system.nix | head -1)
+
+[ -n "$pkgs_url" ] || die "could not find the pin URL in nix/pkgs.nix"
+[ -n "$sys_url" ]  || die "could not find the pin URL in nix/system.nix"
+
+if [ "$pkgs_url" != "$sys_url" ]; then
+    die "pin mismatch:
+  nix/pkgs.nix:   $pkgs_url
+  nix/system.nix: $sys_url"
+fi
+
+pkgs_sha=$(grep -oE "$sha_re" nix/pkgs.nix | head -1)
+sys_sha=$(grep -oE "$sha_re" nix/system.nix | head -1)
+
+if [ -n "$pkgs_sha" ] && [ -n "$sys_sha" ] && [ "$pkgs_sha" != "$sys_sha" ]; then
+    die "sha256 mismatch:
+  nix/pkgs.nix:   $pkgs_sha
+  nix/system.nix: $sys_sha"
+fi
+
+if { [ -n "$pkgs_sha" ] && [ -z "$sys_sha" ]; } || { [ -z "$pkgs_sha" ] && [ -n "$sys_sha" ]; }; then
+    echo "check: warning — only one of the two files carries a sha256" >&2
+fi
+
+echo "check ok: $pkgs_url"
