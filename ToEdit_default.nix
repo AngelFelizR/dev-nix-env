@@ -1,22 +1,22 @@
 # Private dev shell, runnable inside the container against the mounted repo:
 #   nix-shell --run "quarto render"
-# Baked as the Docker image's system + r-book closures, so this shell is
-# instant; its real use is adding packages later: edit nix/r-book.nix and
+# Baked as the Docker image's system + packages closures, so this shell is
+# instant; its real use is adding packages later: edit nix/packages.nix and
 # `nix-shell` builds only what is missing.
 #
 # TO EDIT — only if you change the language scope:
-#   - if your project does not use R, remove the `rBook` line and the two that
-#     use it.
+#   - if your project does not use R, remove the `rEnv` line and the two
+#     that use it (R_LIBS_SITE and rEnv in buildInputs).
 # When done, rename: ToEdit_default.nix -> default.nix
 let
   pkgs = import ./nix/pkgs.nix;
   systemPackages = import ./nix/system.nix { inherit pkgs; };
-  rBook = import ./nix/r-book.nix { inherit pkgs; };
+  packages = import ./nix/packages.nix { inherit pkgs; };
 in {
   shell = pkgs.mkShell {
-    R_LIBS_SITE = "${rBook}/library";
+    R_LIBS_SITE = "${packages.rEnv}/library";
     R_PROFILE = "${./Rprofile.site}";
-    buildInputs = [ systemPackages rBook ];
+    buildInputs = [ systemPackages packages.rEnv ];
     LOCALE_ARCHIVE =
       if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
       then "${pkgs.glibcLocales}/lib/locale/locale-archive"

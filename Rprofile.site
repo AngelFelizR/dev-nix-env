@@ -1,7 +1,7 @@
 # Rprofile.site — blocks install.packages()/update.packages() on purpose.
 #
 # (Do not edit — generic.) In this environment every package is declared in
-# nix/r-book.nix (or nix/system.nix) and rebuilt with ./build-image.sh. There
+# nix/packages.nix (or nix/system.nix) and rebuilt with ./build-image.sh. There
 # is no ad-hoc installation: the real state always lives in a versioned file.
 # (The "slim" R also ships no compiler on PATH, so it would not work anyway.)
 #
@@ -12,7 +12,7 @@
 install.packages <- function(...) {
   stop(
     "install.packages() is disabled in this environment.\n",
-    "  Declare the package in nix/r-book.nix (or nix/system.nix) and rebuild\n",
+    "  Declare the package in nix/packages.nix (or nix/system.nix) and rebuild\n",
     "  with ./build-image.sh. To try it on the fly without rebuilding:\n",
     "  docker compose exec -u root <project>-dev nix-shell"
   )

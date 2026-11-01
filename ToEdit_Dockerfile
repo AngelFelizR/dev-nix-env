@@ -14,14 +14,16 @@
 # ./build-image.sh (persistent volume, so adding a package does not recompile
 # R) and land here as dist/closure.tar.gz. Base is nixos/nix, so Nix itself
 # is in the image; everything else is the closure of nix/system.nix (slim R,
-# quarto, python+jupyter, git, openssh) plus nix/r-book.nix (R packages).
+# quarto, python+jupyter, git, openssh) plus nix/packages.nix (the project's
+# R packages, via its rEnv).
 #
 #   ./build-image.sh     # build this image (run it, do not docker build)
 #   ./setup.sh           # start the stack and install your SSH key
 #   ssh <Host>           # repo at /home/dev/<project>
 #
-# R packages live in nix/r-book.nix: edit it and rerun ./build-image.sh.
-# install.packages() cannot work here -- slim R ships no compiler on PATH.
+# R and Python packages live in nix/packages.nix: edit it and rerun
+# ./build-image.sh. install.packages() cannot work here -- slim R ships no
+# compiler on PATH.
 
 ARG NIX_IMAGE=nixos/nix:2.35.2
 
@@ -51,13 +53,13 @@ RUN nix-store --load-db < /tmp/db.dump && rm /tmp/db.dump
 # the FHS-ish lib dir the Positron REH launcher patchelfs its bundled node
 # against (built by nix/positron-libs.nix; no version-globs here).
 COPY dist/out-system.path /tmp/out-system.path
-COPY dist/out-rbook.path /tmp/out-rbook.path
+COPY dist/out-r-env.path /tmp/out-r-env.path
 COPY dist/out-positron.path /tmp/out-positron.path
 RUN mkdir -p /opt && \
     ln -s "$(cat /tmp/out-system.path)" /opt/system && \
-    ln -s "$(cat /tmp/out-rbook.path)" /opt/r && \
+    ln -s "$(cat /tmp/out-r-env.path)" /opt/r && \
     ln -s "$(cat /tmp/out-positron.path)" /opt/positron-libs && \
-    rm /tmp/out-system.path /tmp/out-rbook.path /tmp/out-positron.path
+    rm /tmp/out-system.path /tmp/out-r-env.path /tmp/out-positron.path
 
 # Positron Remote SSH: its server bootstrap reads /etc/os-release (absent
 # here) and check-requirements.sh aborts without a glibc it recognises.

@@ -50,12 +50,12 @@ docker run --rm \
         cat nix/nix.conf >> /etc/nix/nix.conf
         nix-build -E '(let pkgs = import ./nix/pkgs.nix; in import ./nix/system.nix { inherit pkgs; })' \
             -o /build/dist/out-system
-        nix-build nix/r-book.nix -o /build/dist/out-rbook
+        nix-build nix/packages.nix -A rEnv -o /build/dist/out-r-env
         nix-build nix/positron-libs.nix -o /build/dist/out-positron
         readlink -f /build/dist/out-system > /build/dist/out-system.path
-        readlink -f /build/dist/out-rbook  > /build/dist/out-rbook.path
+        readlink -f /build/dist/out-r-env  > /build/dist/out-r-env.path
         readlink -f /build/dist/out-positron > /build/dist/out-positron.path
-        nix-store -qR /build/dist/out-system /build/dist/out-rbook /build/dist/out-positron | sort -u \
+        nix-store -qR /build/dist/out-system /build/dist/out-r-env /build/dist/out-positron | sort -u \
             > /build/dist/closure
         # Raw db dump, trimmed on the host to the closure below: the full
         # dump carries historical .drv entries whose files are not in the

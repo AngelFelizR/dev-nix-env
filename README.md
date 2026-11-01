@@ -85,7 +85,8 @@ root SSH to the whole repo).
 
 ### 5. No `install.packages()` / `pip install`
 **Decision:** there is no ad-hoc installation inside the container; every package
-is declared in `nix/r-book.nix` or `nix/system.nix` and rebuilt. `Rprofile.site`
+is declared in `nix/packages.nix` (or `nix/system.nix` for tools/languages) and
+rebuilt. `Rprofile.site`
 blocks `install.packages()`/`update.packages()` with a clear message (via
 `R_PROFILE`).
 **Why:** the real state always lives in a versioned file, so the environment is
@@ -111,7 +112,7 @@ are generic and should not be touched.
 |---|---|---|
 | `nix/ToEdit_pkgs.nix` | The **pin** (versions of everything) | yes |
 | `nix/ToEdit_system.nix` | Languages + tools (R, Python, Quarto…) | yes |
-| `nix/ToEdit_r-book.nix` | R packages | yes |
+| `nix/ToEdit_packages.nix` | **Packages for every language** (R, Python) | yes |
 | `ToEdit_Dockerfile` | Runtime wrapper | yes (little) |
 | `ToEdit_docker-compose.yml` | Image/container/port/mount | yes |
 | `ToEdit_build-image.sh` | Assembles closures + image | yes (names) |
@@ -140,11 +141,11 @@ ToEdit_patch-reh.sh       -> patch-reh.sh
 ToEdit_default.nix        -> default.nix
 nix/ToEdit_pkgs.nix       -> nix/pkgs.nix
 nix/ToEdit_system.nix     -> nix/system.nix
-nix/ToEdit_r-book.nix     -> nix/r-book.nix
+nix/ToEdit_packages.nix   -> nix/packages.nix
 ```
 
 The scripts already reference the **final names** (`nix/pkgs.nix`,
-`nix/system.nix`, `nix/r-book.nix`, `entrypoint.sh`), so you only rename; you do
+`nix/system.nix`, `nix/packages.nix`, `entrypoint.sh`), so you only rename; you do
 not touch references.
 
 ## Start a project
@@ -172,36 +173,39 @@ Host MyProject
 
 ### Python (comes ready)
 
-Python 3.12 + Jupyter is already in `nix/ToEdit_system.nix`. To add packages
-(`numpy`, `pandas`, …):
+Python 3.12 + the Jupyter engine are already in `nix/ToEdit_system.nix`. To add
+the project's packages (`numpy`, `pandas`, …), declare them in
+`nix/ToEdit_packages.nix`:
 
 ```nix
-python = pkgs.python312.withPackages (ps: [
-  ps.ipykernel
-  ps."jupyter-core"
-  ps.nbconvert
-  ps.numpy      # <- add
-  ps.pandas     # <- add
-]);
+pythonPackages = ps: with ps; [
+  numpy      # <- add
+  pandas     # <- add
+];
 ```
+
+(`ps:` is the package set of the interpreter `system.nix` selects — keep that
+form: it makes it impossible to list packages from a different Python version,
+a mismatch that only shows up later as `ModuleNotFoundError`.)
 
 Then: `./build-image.sh`.
 
 ### R (comes ready)
 
-R packages go in `nix/ToEdit_r-book.nix`:
+R packages go in `nix/ToEdit_packages.nix`:
 
 ```nix
-inherit (pkgs.rPackages)
+rPackages = with pkgs.rPackages; [
   rmarkdown
   knitr
   dplyr        # <- add
-  tidymodels;  # <- add
+  tidymodels   # <- add
+];
 ```
 
 ### Python only (drop R)
 
-1. Delete `nix/r-slim.nix`, `nix/slim-r-overlay.nix` and `nix/ToEdit_r-book.nix`.
+1. Delete `nix/r-slim.nix` and `nix/slim-r-overlay.nix`.
 2. In `nix/ToEdit_pkgs.nix`, point the pin at the official nixpkgs release and
    drop the overlay:
 
@@ -210,12 +214,15 @@ inherit (pkgs.rPackages)
    ```
 
 3. In `nix/ToEdit_system.nix`, point `nixpkgsSrc` at the same URL and remove the
-   `R` line; in `ToEdit_default.nix` and `ToEdit_build-image.sh`, remove the
-   lines that reference `r-book`. Run `./check` to confirm the pin matches.
+   `R` line; leave `rPackages` empty in `nix/ToEdit_packages.nix`, and in
+   `ToEdit_default.nix` and `ToEdit_build-image.sh`, remove the `rEnv` lines.
+   Run `./check` to confirm the pin matches.
 
 ### R only (drop Python)
 
-In `nix/ToEdit_system.nix`, remove the `python` line and its `inherit`. That's it.
+In `nix/ToEdit_system.nix`, remove the `python` line and its `inherit`; the
+`pythonPackages` section of `nix/ToEdit_packages.nix` is then simply unused.
+That's it.
 
 ### Julia / Rust / other languages
 
@@ -225,7 +232,8 @@ In `nix/ToEdit_system.nix`, add them to the final `inherit (pkgs) ...`:
 inherit R python quarto git nixpkgsSource julia rustup;
 ```
 
-Nix already packages almost every language.
+Nix already packages almost every language. Their libraries/packages belong in
+`nix/ToEdit_packages.nix` as a new section, like the R and Python ones.
 
 ## Change versions (pin)
 
@@ -236,6 +244,14 @@ each date is an `rstats-on-nix` snapshot of R + CRAN/Bioconductor. When bumping,
 update the **date and the `sha256`** in `nix/ToEdit_pkgs.nix` *and* the matching
 `nixpkgsSrc` in `nix/ToEdit_system.nix`. Before rebuilding, run `./check` to make
 sure both the URL and the `sha256` match. Rebuild with `./build-image.sh`.
+
+> **The CSV can lag reality.** If a build dies fetching the pin with
+> `NAR hash mismatch`, that row's hash is stale: the archive GitHub serves for
+> the ref changed after rix recorded it (seen with `2026-10-13`; the current
+> `2026-09-28` hash was verified against GitHub). Recompute it with
+> `nix-prefetch-url --unpack <URL>` and put the result in both files. `./check`
+> only compares the two files with each other — it cannot catch a stale
+> upstream hash.
 
 > The R pin is not a plain date: it is `rstats-on-nix`'s **weekly dated branch**
 > (CRAN moves weekly, so the fork cuts a matching snapshot with a binary cachix
@@ -262,8 +278,8 @@ When bumping the pin:
 
 ## Try a package without rebuilding the image
 
-Add it to `nix/ToEdit_r-book.nix` or `nix/ToEdit_system.nix` and, inside the
-container, run:
+Add it to `nix/ToEdit_packages.nix` (or `nix/ToEdit_system.nix` for a tool or
+language) and, inside the container, run:
 
 ```sh
 # nix needs to write to /nix/store (root-only), so it runs as root:

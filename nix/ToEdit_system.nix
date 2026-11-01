@@ -3,16 +3,17 @@
 #           nix/ToEdit_system.nix -> nix/system.nix
 #  ---------------------------------------------------------------------------
 #  WHAT TO CHANGE:
-#    * Add a Python package -> add it to the `withPackages` list (below),
-#      e.g. ps.numpy, ps.pandas.
+#    * Add a package (R, Python...) -> it does NOT go here: declare it in
+#      nix/packages.nix, the single packages file for every language.
 #    * Add a language (Julia, Rust...) -> add it to `inherit (pkgs) ...` at
 #      the bottom, e.g. julia, rustup.
 #    * Drop R -> remove `R` and the overlay in pkgs.nix (and r-slim.nix /
-#      slim-r-overlay.nix / r-book.nix).
+#      slim-r-overlay.nix); leave `rPackages` empty in nix/packages.nix.
 # =============================================================================
 # System layer: the slim R interpreter, locales, fonts and the tools a
 # project needs (git, openssh for the dev sshd, quarto + pandoc to render,
-# python + jupyter for python decks).
+# python + jupyter for python decks). Project PACKAGES (R and Python) live in
+# nix/packages.nix, imported here for the Python ones.
 # `pkgs` is a parameter so callers can pin it; the default keeps
 # `nix-build nix/system.nix` (Dockerfile build stage) working unchanged.
 { pkgs ? import ./pkgs.nix }:
@@ -20,17 +21,19 @@ let
   # NOT built here: the pin already slims R via slim-r-overlay.nix (r-slim.nix),
   # so building another slim R would put two Rs in the image.
   inherit (pkgs) R;
-  # What quarto's jupyter engine actually runs: the `jupyter` dispatcher
-  # (jupyter_core), the kernel (ipykernel) and the executor (nbconvert).
-  #
-  # TO EDIT — add your Python packages here, e.g.:
-  #   ps.numpy
-  #   ps.pandas
+  # All of the project's package declarations (R + Python), single file.
+  packages = import ./packages.nix { inherit pkgs; };
+  # The three packages quarto's jupyter engine actually runs (the `jupyter`
+  # dispatcher, the kernel and the executor): machinery required regardless
+  # of the project, which is why they live here. The project's own Python
+  # packages come from nix/packages.nix (`pythonPackages`, a `ps: [...]`
+  # function) and are appended below — never list them here, and never list
+  # them against another Python version (that fails at import, not at build).
   python = pkgs.python312.withPackages (ps: [
     ps.ipykernel
     ps."jupyter-core"
     ps.nbconvert
-  ]);
+  ] ++ packages.pythonPackages ps);
   # quarto.override, not quarto: nixpkgs' default wrapper bakes its OWN
   # rWrapper (a full, unstripped R + rmarkdown) and its OWN python with the
   # whole `jupyter` metapackage. Both are set to null so quarto uses the slim
@@ -50,8 +53,8 @@ let
   # TO EDIT — if you change the pin date in nix/pkgs.nix, also change the
   # URL and sha256 below to match.
   nixpkgsSrc = builtins.fetchTarball {
-    url = "https://github.com/rstats-on-nix/nixpkgs/archive/2026-10-13.tar.gz";
-    sha256 = "0z41sx0as5b547gkzksaknpjxhkxc49xxyff94afkxy9hr43xrwy";
+    url = "https://github.com/rstats-on-nix/nixpkgs/archive/2026-09-28.tar.gz";
+    sha256 = "1bn5kv5vn78lcwdymaz8ggb7s5ywk6d3y5fkdaya9b1bwp8vz8s4";
   };
   nixpkgsSource = pkgs.runCommand "nixpkgs-source" { } ''
     ln -s ${nixpkgsSrc} $out

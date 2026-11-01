@@ -29,18 +29,18 @@ docker run --rm --entrypoint sh \
     e() { nix eval --impure --raw --expr "let pkgs = import ./nix/pkgs.nix; in builtins.toString $1" 2>/dev/null; }
     R=$(e "pkgs.R")
     r_closure=$(nix-store -qR "$R")
-    rbook_closure=$(nix-store -qR /opt/r)
+    r_env_closure=$(nix-store -qR /opt/r)
     fail=0
 
     # What r-slim.nix must have removed.
     for a in openjdk stdenv.cc glib.dev cairo.dev pango.dev graphviz python3; do
       p=$(e "pkgs.$a")
       if echo "$r_closure" | grep -qF "$p"; then
-        echo "REGRESSION: $a is still in R's closure ($p)" >&2
+        echo "REGRESSION: $a is still in the closure of R ($p)" >&2
         fail=1
       fi
-      if echo "$rbook_closure" | grep -qF "$p"; then
-        echo "REGRESSION: $a is still in /opt/r's closure ($p)" >&2
+      if echo "$r_env_closure" | grep -qF "$p"; then
+        echo "REGRESSION: $a is still in the closure of /opt/r ($p)" >&2
         fail=1
       fi
     done
@@ -48,7 +48,7 @@ docker run --rm --entrypoint sh \
     # What r-slim.nix keeps on purpose.
     gf=$(e "pkgs.gfortran")
     if ! echo "$r_closure" | grep -qF "$gf"; then
-      echo "REGRESSION: gfortran is no longer in R's closure" >&2
+      echo "REGRESSION: gfortran is no longer in the closure of R" >&2
       fail=1
     fi
 

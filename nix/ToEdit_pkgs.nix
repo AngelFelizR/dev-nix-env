@@ -18,8 +18,8 @@
 # =============================================================================
 let
   base = fetchTarball {
-    url = "https://github.com/rstats-on-nix/nixpkgs/archive/2026-10-13.tar.gz";
-    sha256 = "0z41sx0as5b547gkzksaknpjxhkxc49xxyff94afkxy9hr43xrwy";
+    url = "https://github.com/rstats-on-nix/nixpkgs/archive/2026-09-28.tar.gz";
+    sha256 = "1bn5kv5vn78lcwdymaz8ggb7s5ywk6d3y5fkdaya9b1bwp8vz8s4";
   };
 in
   import base { overlays = [ (import ./slim-r-overlay.nix) ]; }
