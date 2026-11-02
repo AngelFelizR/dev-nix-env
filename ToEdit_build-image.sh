@@ -4,9 +4,11 @@
 #           ToEdit_build-image.sh -> build-image.sh
 #  ---------------------------------------------------------------------------
 #  WHAT TO CHANGE:
-#    1. The IMAGE / VOLUME defaults below (replace `myproject` with your
-#       project). You can also pass them as variables:
-#         IMAGE=... VOLUME=... ./build-image.sh
+#    1. The IMAGE default below (replace `myproject` with your project). You
+#       can also pass it as a variable: IMAGE=... ./build-image.sh
+#    2. VOLUME: SHARED by all your projects on purpose (see below) — do not
+#       personalize it. Only override it if you ever want a project-private
+#       store: VOLUME=myproject-nix-store ./build-image.sh
 # =============================================================================
 # Builds the private dev image in two steps:
 #
@@ -18,8 +20,17 @@
 #   ./build-image.sh          # everything
 set -euo pipefail
 
+# Fail fast: the pin must be consistent BEFORE anything compiles (the same
+# ./check also runs in CI, see .github/workflows/check.yml).
+./check
+
 IMAGE="${IMAGE:-myproject-dev:latest}"
-VOLUME="${VOLUME:-myproject-nix-store}"
+# ONE store volume shared by every project on this machine: the Nix store is
+# content-addressed, so projects with the same pin share the same built paths
+# — R compiles once, not once per project. Only the BUILD cache is shared;
+# each project still gets its own runtime image. Removing this volume
+# (README: Housekeeping) makes every project recompile once.
+VOLUME="${VOLUME:-dev-nix-store}"
 NIX_IMAGE="${NIX_IMAGE:-nixos/nix:2.35.2}"
 
 docker volume create "$VOLUME" >/dev/null

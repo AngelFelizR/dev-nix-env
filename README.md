@@ -31,8 +31,9 @@ a tarball already compiled by Nix:
 
 - **Nix** decides *what* gets installed and *in which version* (the `nix/`
   files).
-- **`./build-image.sh`** compiles that Nix "closure" inside a container with a
-  persistent volume (so R only compiles the first time) and saves the result to
+- **`./build-image.sh`** runs `./check`, compiles that Nix "closure" inside a
+  container with a persistent volume (so R only compiles the first time —
+  the volume is **shared by all your projects**) and saves the result to
   `dist/closure.tar.gz`.
 - **`docker build` (the Dockerfile)** unpacks that tarball and leaves everything
   ready in `/opt/system` (tools) and `/opt/r` (R packages).
@@ -45,24 +46,34 @@ each file's comments (`r-slim.nix`, `system.nix`, `build-image.sh`); here only
 the rationale.
 
 ### 1. A single Nix pin for the whole system
-**Decision:** a single date in `nix/pkgs.nix` pins R, Python, Quarto, pandoc,
-git, glibc and the compiler at once.
+**Decision:** a single date in `nix/pin.nix` pins R, Python, Quarto, pandoc,
+git, glibc and the compiler at once — and that file is the *only* place the
+pin exists: `nix/pkgs.nix` and `nix/system.nix` import it, and `./check`
+fails if a copy reappears anywhere else (it runs at the start of every
+`./build-image.sh` and in CI on every push).
 **Why:** a reproducible snapshot of *everything* in the system, not just the
-libraries. Changing the date is one line; the git diff is the full history of
-the environment.
+libraries. Changing the date is one line in one file; the git diff is the
+full history of the environment.
 **Discarded:** per-language lockfiles (`renv`, `pip`, `conda`) + per-tool base
 images — each with its own update cycle and no control over the system beneath
-the libraries.
+the libraries. Also discarded: the URL + hash living in two files (the classic
+"bumped one, forgot the other" failure) — `./check` caught it, `pin.nix`
+removes the class of bug.
 
 ### 2. Runtime image from pre-compiled closures
 **Decision:** `./build-image.sh` compiles the Nix closures in a container with a
 persistent volume, packages them into `dist/closure.tar.gz`, and the Dockerfile
-only unpacks them.
+only unpacks them. That volume (`dev-nix-store`) is **one shared by every
+project** on the machine.
 **Why:** the `nixos/nix` base already brings Nix (no need to install it at
 runtime), and compiling outside `docker build` means adding a package recompiles
-only what is missing, not all of R.
+only what is missing, not all of R. Sharing the store exploits the fact that
+it is content-addressed: two projects on the same pin reuse the same built
+paths, so R compiles once across projects instead of once per project (only
+the build cache is shared — each project keeps its own image).
 **Discarded:** an Ubuntu image with Nix installed on top (installing Nix on each
-build, larger and less reproducible images).
+build, larger and less reproducible images). Also discarded: one store volume
+per project — it duplicated ~1–2 GB of identical paths per project.
 
 ### 3. "Slim" R (`r-slim.nix`)
 **Decision:** strip from R's closure the toolchain that is only needed to
@@ -88,7 +99,9 @@ root SSH to the whole repo).
 is declared in `nix/packages.nix` (or `nix/system.nix` for tools/languages) and
 rebuilt. `Rprofile.site`
 blocks `install.packages()`/`update.packages()` with a clear message (via
-`R_PROFILE`).
+`R_PROFILE`). Packages the pin does not carry (GitHub-only) are declared from a
+source snapshot in the same file, via the `rFromGitHub` / `pythonFromGitHub`
+helpers — still declarative, still versioned.
 **Why:** the real state always lives in a versioned file, so the environment is
 rebuildable from scratch and the diff tells the whole story.
 **Discarded:** ad-hoc installation — it reintroduces the drift this all avoids.
@@ -110,21 +123,23 @@ are generic and should not be touched.
 
 | File | What it is | Edit |
 |---|---|---|
-| `nix/ToEdit_pkgs.nix` | The **pin** (versions of everything) | yes |
-| `nix/ToEdit_system.nix` | Languages + tools (R, Python, Quarto…) | yes |
-| `nix/ToEdit_packages.nix` | **Packages for every language** (R, Python) | yes |
+| `nix/ToEdit_pin.nix` | The **pin** (date + sha256; single source) | yes |
+| `nix/pkgs.nix` | The pkgs set (imports the pin + overlays) | no (generic; overlay only for Python-only) |
+| `nix/ToEdit_system.nix` | Languages + tools (R, Python, Quarto…) | only to change languages |
+| `nix/ToEdit_packages.nix` | **Packages for every language** (R, Python; from the pin *or* GitHub) | yes |
 | `ToEdit_Dockerfile` | Runtime wrapper | yes (little) |
 | `ToEdit_docker-compose.yml` | Image/container/port/mount | yes |
-| `ToEdit_build-image.sh` | Assembles closures + image | yes (names) |
+| `ToEdit_build-image.sh` | Assembles closures + image | yes (name) |
 | `ToEdit_setup.sh` | Starts + installs SSH key | yes |
 | `ToEdit_patch-reh.sh` | Patches the Positron REH | yes (name) |
-| `ToEdit_default.nix` | The repo's `nix-shell` | only if you change languages |
+| `default.nix` | The repo's `nix-shell` | no (generic; rEnv only if no R) |
 | `entrypoint.sh` | sshd bootstrap | no |
 | `Rprofile.site` | Blocks `install.packages()`/`update.packages()` | no |
 | `.dockerignore` | Build context | no |
 | `nix/nix.conf` | Shared Nix config (substituters) | no |
 | `nix/positron-libs.nix` | FHS libs for Positron (glibc/gcc) | no |
-| `check` | Verifies pin consistency | no |
+| `check` | Verifies the pin is single-sourced and consistent | no |
+| `.github/workflows/check.yml` | CI: runs `./check` + parses every `.nix` on push/PR | no |
 | `check-r-slim.sh` | Verifies the R strip did not regress | no |
 | `nix/r-slim.nix`, `nix/slim-r-overlay.nix` | Compiler-less R (advanced) | **do not touch** |
 
@@ -138,15 +153,16 @@ ToEdit_docker-compose.yml -> docker-compose.yml
 ToEdit_build-image.sh     -> build-image.sh
 ToEdit_setup.sh           -> setup.sh
 ToEdit_patch-reh.sh       -> patch-reh.sh
-ToEdit_default.nix        -> default.nix
-nix/ToEdit_pkgs.nix       -> nix/pkgs.nix
+nix/ToEdit_pin.nix        -> nix/pin.nix
 nix/ToEdit_system.nix     -> nix/system.nix
 nix/ToEdit_packages.nix   -> nix/packages.nix
 ```
 
-The scripts already reference the **final names** (`nix/pkgs.nix`,
-`nix/system.nix`, `nix/packages.nix`, `entrypoint.sh`), so you only rename; you do
-not touch references.
+The scripts already reference the **final names** (`nix/pin.nix`,
+`nix/pkgs.nix`, `nix/system.nix`, `nix/packages.nix`, `entrypoint.sh`), so you
+only rename; you do not touch references. (`nix/pkgs.nix` and `default.nix`
+already carry their final names — they are generic.) (`./check` works in both
+states — before and after the rename — so you can run it either way.)
 
 ## Start a project
 
@@ -154,7 +170,7 @@ not touch references.
 2. Replace `myproject` with your project name (find-replace in the `ToEdit_*`
    files).
 3. Drop the `ToEdit_` prefix (table above).
-4. `./check`            # (optional) verify the pin is consistent
+4. `./check`            # verify the pin is single-sourced (also runs automatically inside ./build-image.sh and in CI)
 5. `./build-image.sh`  # compiles R the first time (~30-60 min); afterwards it's incremental
 6. `./setup.sh`        # starts the stack and copies your SSH key
 7. `ssh MyProject`     # the repo is mounted at /home/dev/myproject
@@ -203,20 +219,82 @@ rPackages = with pkgs.rPackages; [
 ];
 ```
 
+### Packages from GitHub (not in the pin)
+
+If the pin does not carry a package — or you need a specific GitHub revision
+of one — declare it in `nix/ToEdit_packages.nix` with the helpers already
+defined there. Same rule as every other package: state in a versioned file,
+rebuild, nothing installed inside the container.
+
+R (helper `rFromGitHub`; compiled inside the Nix build, so C/C++/Fortran
+source packages work):
+
+```nix
+rPackages = with pkgs.rPackages; [
+  rmarkdown
+  knitr
+  (rFromGitHub {
+    owner = "OWNER";
+    repo = "REPO";
+    rev = "v1.2.3";      # <- prefer a TAG: a branch is not reproducible
+    sha256 = "...";      # <- nix-prefetch-github OWNER REPO
+    deps = [ dplyr ];    # <- every dependency NOT already in this list
+  })
+];
+```
+
+Python (helper `pythonFromGitHub`; `pyproject = true` + setuptools/wheel by
+default — a bare-`setup.py` repo can pass `pyproject = false`):
+
+```nix
+pythonPackages = ps: with ps; [
+  (pythonFromGitHub ps {
+    owner = "OWNER";
+    repo = "REPO";
+    rev = "v1.2.3";
+    sha256 = "...";      # <- nix-prefetch-github OWNER REPO
+    deps = [ numpy ];    # <- runtime deps, same `ps` set
+  })
+];
+```
+
+Notes:
+
+- **Prefer the pin's name when the package exists there** (cached binaries);
+  GitHub builds compile locally on the first build, then stay incremental.
+- `sha256` comes from `nix-prefetch-github <owner> <repo>` (or
+  `nix-prefetch-url --unpack https://github.com/<owner>/<repo>/archive/<rev>.tar.gz`).
+- `pname` (R) defaults to the repo name — pass `pname = "pkgName"` when the
+  package name that `library()` expects differs from the repo name.
+- A missing `deps` entry fails the build with a clear error — add it there,
+  don't install it by hand.
+
 ### Python only (drop R)
 
 1. Delete `nix/r-slim.nix` and `nix/slim-r-overlay.nix`.
-2. In `nix/ToEdit_pkgs.nix`, point the pin at the official nixpkgs release and
-   drop the overlay:
+2. In `nix/ToEdit_pin.nix`, point the pin at the official nixpkgs release
+   (URL *and* sha256 — `nix-prefetch-url --unpack <URL>` gives you the hash;
+   `./check` requires both):
 
    ```nix
-   import (fetchTarball "https://github.com/NixOS/nixpkgs/archive/refs/tags/26.05.tar.gz") { }
+   url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/26.05.tar.gz";
+   sha256 = "...";
    ```
 
-3. In `nix/ToEdit_system.nix`, point `nixpkgsSrc` at the same URL and remove the
-   `R` line; leave `rPackages` empty in `nix/ToEdit_packages.nix`, and in
-   `ToEdit_default.nix` and `ToEdit_build-image.sh`, remove the `rEnv` lines.
-   Run `./check` to confirm the pin matches.
+3. In `nix/pkgs.nix`, drop the overlay:
+
+   ```nix
+   let
+     pin = import ./pin.nix;
+   in
+     import (fetchTarball { inherit (pin) url sha256; }) { }
+   ```
+
+4. In `nix/ToEdit_system.nix`, remove the `R` line and its `inherit` (its
+   `nixpkgsSrc` already follows `nix/pin.nix` automatically); leave
+   `rPackages` empty in `nix/ToEdit_packages.nix`, and in
+   `default.nix` and `ToEdit_build-image.sh`, remove the `rEnv` lines.
+   Run `./check` to confirm the pin is consistent.
 
 ### R only (drop Python)
 
@@ -237,20 +315,23 @@ Nix already packages almost every language. Their libraries/packages belong in
 
 ## Change versions (pin)
 
-The pin is the `fetchTarball` in `nix/ToEdit_pkgs.nix`. Its date and `sha256`
-come from `rix`'s snapshot table
+The pin lives in **`nix/ToEdit_pin.nix`** (its `url` + `sha256`), and that
+file is the single source: `nix/pkgs.nix` and `nix/ToEdit_system.nix`
+both import it, so no other file carries a copy. Its date and `sha256` come
+from rix's snapshot table
 ([`available_df.csv`](https://raw.githubusercontent.com/ropensci/rix/refs/heads/main/inst/extdata/available_df.csv)):
-each date is an `rstats-on-nix` snapshot of R + CRAN/Bioconductor. When bumping,
-update the **date and the `sha256`** in `nix/ToEdit_pkgs.nix` *and* the matching
-`nixpkgsSrc` in `nix/ToEdit_system.nix`. Before rebuilding, run `./check` to make
-sure both the URL and the `sha256` match. Rebuild with `./build-image.sh`.
+each date is an `rstats-on-nix` snapshot of R + CRAN/Bioconductor. When
+bumping, update the **date and the `sha256`** in `nix/ToEdit_pin.nix` — and
+only there. `./check` enforces the single source (it fails if a duplicated
+URL reappears in any `nix/*.nix`); it runs at the start of every
+`./build-image.sh` and on every push in CI. Rebuild with `./build-image.sh`.
 
 > **The CSV can lag reality.** If a build dies fetching the pin with
 > `NAR hash mismatch`, that row's hash is stale: the archive GitHub serves for
 > the ref changed after rix recorded it (seen with `2026-10-13`; the current
 > `2026-09-28` hash was verified against GitHub). Recompute it with
-> `nix-prefetch-url --unpack <URL>` and put the result in both files. `./check`
-> only compares the two files with each other — it cannot catch a stale
+> `nix-prefetch-url --unpack <URL>` and put the result in `nix/ToEdit_pin.nix`.
+> `./check` verifies the pin is single-sourced — it cannot catch a stale
 > upstream hash.
 
 > The R pin is not a plain date: it is `rstats-on-nix`'s **weekly dated branch**
@@ -314,10 +395,13 @@ new REH, run `./patch-reh.sh`.
 ## Housekeeping
 
 ```sh
-sudo rm -rf dist && docker volume rm myproject-nix-store
+sudo rm -rf dist && docker volume rm dev-nix-store
 ```
 
-(Rebuilding after this recompiles R once.)
+> **`dev-nix-store` is shared by all your projects** (that is the point: the
+> build cache is reused across them). Removing it makes *every* project
+> recompile R once on its next `./build-image.sh`. To keep a project-private
+> store instead, build it with `VOLUME=<project>-nix-store ./build-image.sh`.
 
 ## If something ended up owned by root
 
@@ -334,4 +418,5 @@ sudo chown -R $(id -u):$(id -g) .
 These files are private: add the same entries to your project's `.gitignore` if
 you do not want to commit them (e.g. `/Dockerfile`, `/nix/`, `/setup.sh`,
 `/build-image.sh`, `/docker-compose.yml`, `/default.nix`, `/entrypoint.sh`,
-`/patch-reh.sh`, `/check`, `/check-r-slim.sh`, `/Rprofile.site`, `/dist/`).
+`/patch-reh.sh`, `/check`, `/check-r-slim.sh`, `/Rprofile.site`, `/dist/`,
+`/.github/workflows/check.yml`).

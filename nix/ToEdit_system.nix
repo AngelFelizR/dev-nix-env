@@ -46,16 +46,12 @@ let
     pythonSupport = false;
     withManual = false;
   };
-  # The same tarball nix/pkgs.nix fetchTarball's, shipped in the store so
-  # the first `nix-shell` on a fresh container is instant instead of a
-  # ~80 MB download. Same URL + sha256 => same store path => fetchTarball
-  # finds it.
-  # TO EDIT — if you change the pin date in nix/pkgs.nix, also change the
-  # URL and sha256 below to match.
-  nixpkgsSrc = builtins.fetchTarball {
-    url = "https://github.com/rstats-on-nix/nixpkgs/archive/2026-09-28.tar.gz";
-    sha256 = "1bn5kv5vn78lcwdymaz8ggb7s5ywk6d3y5fkdaya9b1bwp8vz8s4";
-  };
+  # The tarball of nix/pin.nix, shipped in the store so the first `nix-shell`
+  # on a fresh container is instant instead of a ~80 MB download. Same
+  # url + sha256 => same store path as nix/pkgs.nix's fetchTarball => it is
+  # already there. Single source: pin edits happen ONLY in nix/pin.nix (this
+  # file and nix/pkgs.nix import it; ./check fails on any duplicate copy).
+  nixpkgsSrc = builtins.fetchTarball { inherit (import ./pin.nix) url sha256; };
   nixpkgsSource = pkgs.runCommand "nixpkgs-source" { } ''
     ln -s ${nixpkgsSrc} $out
   '';

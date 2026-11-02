@@ -1,39 +1,70 @@
 #!/usr/bin/env bash
-# Checks that the PIN is consistent between files before building.
-# Run it after renaming the ToEdit_* files:  ./check
+# Checks that the PIN is consistent before building. Run it any time:
+#   ./check
+# It runs by itself at the start of ./build-image.sh and in CI
+# (.github/workflows/check.yml).
 #
-# The classic failure: you change the pin date in nix/pkgs.nix and forget the
-# URL (or the sha256) in nix/system.nix (or vice versa). This detects it.
+# Works in both states of the template: with the ToEdit_* files (as
+# committed) and after the Step-0 rename (nix/pkgs.nix, nix/pin.nix, ...).
+#
+# What it guards, given the single-source pin (nix/pin.nix):
+#   1. nix/pin.nix exists and carries a nixpkgs archive URL + a sha256.
+#   2. nix/pkgs.nix and nix/system.nix import ./pin.nix (they must not
+#      hardcode the pin themselves).
+#   3. No other nix file carries a nixpkgs archive URL: the classic failure
+#      — bumping the date in one place and forgetting the other — cannot
+#      come back.
+#   4. No final-name file sits next to its ToEdit_ twin (an ambiguous
+#      leftover would make builds and this check disagree on which is live).
 set -euo pipefail
 
 die() { echo "check: $*" >&2; exit 1; }
 
-url_re='https://github.com/[^/]+/nixpkgs/archive/[0-9]{4}-[0-9]{2}-[0-9]{2}\.tar\.gz'
+# Nixpkgs archive URLs (rix/rstats-on-nix dated snapshots AND official
+# release tags, e.g. .../archive/refs/tags/26.05.tar.gz).
+url_re='https://github\.com/[^/"]+/nixpkgs/archive/[^"]+\.tar\.gz'
 sha_re='sha256 = "([0-9a-z]+)"'
 
-pkgs_url=$(grep -oE "$url_re" nix/pkgs.nix | head -1)
-sys_url=$(grep -oE "$url_re" nix/system.nix | head -1)
+# Pick the live name of a file: the final one if it exists (post-rename),
+# else the ToEdit_ one (template as committed).
+resolve() { # resolve <final> <toedit> -> echoes the existing path
+    if [ -f "$1" ]; then echo "$1"; elif [ -f "$2" ]; then echo "$2"; else return 1; fi
+}
 
-[ -n "$pkgs_url" ] || die "could not find the pin URL in nix/pkgs.nix"
-[ -n "$sys_url" ]  || die "could not find the pin URL in nix/system.nix"
+# 4. ambiguous leftovers: both names present for the same file.
+for pair in "nix/pin.nix:nix/ToEdit_pin.nix" \
+            "nix/pkgs.nix:nix/ToEdit_pkgs.nix" \
+            "nix/system.nix:nix/ToEdit_system.nix"; do
+    f="${pair%%:*}"; t="${pair##*:}"
+    [ -f "$f" ] && [ -f "$t" ] && die "both $f and $t exist — remove the leftover (keep one)"
+done
 
-if [ "$pkgs_url" != "$sys_url" ]; then
-    die "pin mismatch:
-  nix/pkgs.nix:   $pkgs_url
-  nix/system.nix: $sys_url"
-fi
+# 1. the pin file (comment lines are ignored: pin.nix carries a commented
+#    example URL for the Python-only path that must not shadow the real one)
+pin_file=$(resolve nix/pin.nix nix/ToEdit_pin.nix) \
+    || die "pin file not found: nix/pin.nix (or nix/ToEdit_pin.nix)"
 
-pkgs_sha=$(grep -oE "$sha_re" nix/pkgs.nix | head -1)
-sys_sha=$(grep -oE "$sha_re" nix/system.nix | head -1)
+code=$(grep -vE '^[[:space:]]*#' "$pin_file")
 
-if [ -n "$pkgs_sha" ] && [ -n "$sys_sha" ] && [ "$pkgs_sha" != "$sys_sha" ]; then
-    die "sha256 mismatch:
-  nix/pkgs.nix:   $pkgs_sha
-  nix/system.nix: $sys_sha"
-fi
+pin_url=$(printf '%s\n' "$code" | grep -oE "$url_re" | head -1 || true)
+[ -n "$pin_url" ] || die "no nixpkgs archive URL found in $pin_file"
 
-if { [ -n "$pkgs_sha" ] && [ -z "$sys_sha" ]; } || { [ -z "$pkgs_sha" ] && [ -n "$sys_sha" ]; }; then
-    echo "check: warning — only one of the two files carries a sha256" >&2
-fi
+pin_sha=$(printf '%s\n' "$code" | grep -oE "$sha_re" | head -1 || true)
+[ -n "$pin_sha" ] || die "no sha256 found in $pin_file"
 
-echo "check ok: $pkgs_url"
+# 2. pkgs.nix and system.nix must import the pin, never carry it.
+for spec in "nix/pkgs.nix:nix/ToEdit_pkgs.nix" \
+            "nix/system.nix:nix/ToEdit_system.nix"; do
+    f=$(resolve "${spec%%:*}" "${spec##*:}") \
+        || die "not found: ${spec%%:*} (nor its ToEdit_ version)"
+    grep -q './pin.nix' "$f" || die "$f does not import ./pin.nix (single source broken)"
+done
+
+# 3. no duplicate pin anywhere else under nix/ (comment lines ignored)
+for f in nix/*.nix; do
+    [ "$f" = "$pin_file" ] && continue
+    dup=$(grep -vE '^[[:space:]]*#' "$f" | grep -oE "$url_re" | head -1 || true)
+    [ -z "$dup" ] || die "duplicate pin in $f: $dup — edit $pin_file only"
+done
+
+echo "check ok: $pin_url (single source: $pin_file)"

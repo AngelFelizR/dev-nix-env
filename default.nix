@@ -4,10 +4,9 @@
 # instant; its real use is adding packages later: edit nix/packages.nix and
 # `nix-shell` builds only what is missing.
 #
-# TO EDIT — only if you change the language scope:
-#   - if your project does not use R, remove the `rEnv` line and the two
-#     that use it (R_LIBS_SITE and rEnv in buildInputs).
-# When done, rename: ToEdit_default.nix -> default.nix
+# (Generic — NOT edited in the normal flow.) The only edit, for a project
+# WITHOUT R (README: "Python only (drop R)"): remove the `rEnv` line below
+# and the two that use it (R_LIBS_SITE and rEnv in buildInputs).
 let
   pkgs = import ./nix/pkgs.nix;
   systemPackages = import ./nix/system.nix { inherit pkgs; };

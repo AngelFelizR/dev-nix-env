@@ -1,0 +1,28 @@
+# Template guardrails on every push / PR:
+#   * ./check  — pin consistency (single-source nix/pin.nix, no duplicates,
+#                no ToEdit_ leftovers). Works on the template as committed
+#                AND after a project renames the ToEdit_* files.
+#   * nix-instantiate --parse — every .nix file must parse (syntax only, no
+#                evaluation, so it also works before the rename).
+name: check
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pin consistency (./check)
+        run: ./check
+
+      - uses: cachix/install-nix-action@v31
+        name: install Nix (parse only)
+
+      - name: nix syntax
+        run: |
+          for f in *.nix nix/*.nix; do
+            echo "parse $f"
+            nix-instantiate --parse "$f" > /dev/null
+          done
