@@ -1,0 +1,14 @@
+# =============================================================================
+#  TO EDIT — customize for each project. When done, rename:
+#           ToEdit_prod-compose.yml -> prod-compose.yml
+#  ---------------------------------------------------------------------------
+#  WHAT TO CHANGE: image / container_name / ports.
+# =============================================================================
+# Production stack: serves the rendered static site. Build the image first:
+#   ./prod.sh
+services:
+  myproject:
+    image: myproject:prod
+    container_name: myproject-prod
+    ports:
+      - "8080:80"

@@ -1,0 +1,11 @@
+# Production build context: the repo SOURCE (unlike the dev build, whose
+# context is only dist/ + entrypoint.sh + Rprofile.site via .dockerignore).
+# prod.sh swaps this in for the duration of `docker build -f prod.Dockerfile`.
+dist
+.git
+.quarto
+_freeze
+_site
+.Rproj.user
+.DS_Store
+node_modules

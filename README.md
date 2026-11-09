@@ -116,6 +116,33 @@ fake `ID=nixos` and point the FHS binaries at `/opt/positron-libs`
 it loses the Positron workflow you already have set up. Detail in the "Positron
 (Remote SSH)" section.
 
+### 7. `gitMinimal`, not `git.override`
+**Decision:** use the pre-built `pkgs.gitMinimal` instead of a hand-rolled
+`pkgs.git.override { perlSupport = false; pythonSupport = false; withManual = false; }`.
+**Why:** any custom `override` changes the derivation hash, so the result is
+*not* on `cache.nixos.org` and git compiles from source — running its own test
+suite (the `t53xx-*.sh … ok` lines in the build) and dragging the compiler in.
+`gitMinimal` is a first-class package with the same flags (no perl, python,
+man pages, pcre2), so it is pre-built and downloads.
+**Discarded:** plain `git` (carries perl + python + man pages, ~225 MB), and the
+hand-rolled `git.override` (no cache → source build + git's test suite).
+
+### 8. Patched quarto for the bundled pandoc
+**Decision:** quarto 1.9.37 (in the pin) emits pandoc 3.8+'s `syntax-highlighting`
+option, but nixpkgs bundles it against pandoc 3.7.0.2, which does not know it —
+`quarto render` of revealjs dies with "Unknown option syntax-highlighting"
+(nixpkgs#519484). `nix/system.nix` patches quarto via `overrideAttrs` to emit the
+3.7 name (`highlight-style`) instead, and adds `pyyaml` to the jupyter engine's
+Python (`share/jupyter/jupyter.py` does `import yaml`).
+**Why:** without it the pin cannot render slides (or anything with highlighting)
+at all, so neither dev nor prod could build the site.
+**Residual:** quarto's `jog.lua` filter still logs a *non-fatal*
+"Don't know how to traverse TableBody" for tables in revealjs (another 3.8/3.7
+AST change). Tables render in place (not "jogged"/floated) with their content
+intact.
+**Discarded:** upgrading pandoc to 3.8+ (a full Haskell rebuild — nixpkgs#519484
+shows it is not straightforward), or downgrading quarto to match pandoc 3.7.
+
 ## Files and what to edit
 
 The files **with the `ToEdit_` prefix** are the ones you personalize; the rest
@@ -132,10 +159,14 @@ are generic and should not be touched.
 | `ToEdit_build-image.sh` | Assembles closures + image | yes (name) |
 | `ToEdit_setup.sh` | Starts + installs SSH key | yes |
 | `ToEdit_patch-reh.sh` | Patches the Positron REH | yes (name) |
+| `ToEdit_prod.Dockerfile` | Production image (render + nginx serve) | yes (name) |
+| `ToEdit_prod.sh` | Builds the production image | yes (name) |
+| `ToEdit_prod-compose.yml` | Production compose (serves the site) | yes (name) |
 | `default.nix` | The repo's `nix-shell` | no (generic; rEnv only if no R) |
 | `entrypoint.sh` | sshd bootstrap | no |
 | `Rprofile.site` | Blocks `install.packages()`/`update.packages()` | no |
 | `.dockerignore` | Build context | no |
+| `.dockerignore.prod` | Production build context | no (generic) |
 | `nix/nix.conf` | Shared Nix config (substituters) | no |
 | `nix/positron-libs.nix` | FHS libs for Positron (glibc/gcc) | no |
 | `check` | Verifies the pin is single-sourced and consistent | no |
@@ -153,6 +184,9 @@ ToEdit_docker-compose.yml -> docker-compose.yml
 ToEdit_build-image.sh     -> build-image.sh
 ToEdit_setup.sh           -> setup.sh
 ToEdit_patch-reh.sh       -> patch-reh.sh
+ToEdit_prod.Dockerfile     -> prod.Dockerfile
+ToEdit_prod.sh             -> prod.sh
+ToEdit_prod-compose.yml    -> prod-compose.yml
 nix/ToEdit_pin.nix        -> nix/pin.nix
 nix/ToEdit_system.nix     -> nix/system.nix
 nix/ToEdit_packages.nix   -> nix/packages.nix
@@ -290,8 +324,7 @@ Notes:
      import (fetchTarball { inherit (pin) url sha256; }) { }
    ```
 
-4. In `nix/ToEdit_system.nix`, remove the `R` line and its `inherit` (its
-   `nixpkgsSrc` already follows `nix/pin.nix` automatically); leave
+4. In `nix/ToEdit_system.nix`, remove the `R` line and its `inherit`; leave
    `rPackages` empty in `nix/ToEdit_packages.nix`, and in
    `default.nix` and `ToEdit_build-image.sh`, remove the `rEnv` lines.
    Run `./check` to confirm the pin is consistent.
@@ -307,7 +340,7 @@ That's it.
 In `nix/ToEdit_system.nix`, add them to the final `inherit (pkgs) ...`:
 
 ```nix
-inherit R python quarto git nixpkgsSource julia rustup;
+inherit R python quarto git julia rustup;
 ```
 
 Nix already packages almost every language. Their libraries/packages belong in
@@ -375,6 +408,11 @@ R -e 'library(pkg)'           # or: python -c 'import numpy'
 
 When you want it fixed, `./build-image.sh`.
 
+> The first `nix-shell` in a fresh container downloads the pin's nixpkgs
+> tarball (~80 MB) into the store; after that it is instant. The unpacked
+> source is deliberately **not** shipped in the image to keep it ~0.5 GB
+> smaller.
+
 ## The `dev` user (non-root)
 
 SSH sessions log in as `dev` (UID 1000 = your `id -u`), so the files you render
@@ -391,6 +429,55 @@ Positron Remote SSH support is included (the container carries the Nix
 workarounds). The server binary is **not** in the image: it lives in the
 `myproject-positron-server` volume. After every Positron update that installs a
 new REH, run `./patch-reh.sh`.
+
+Positron and its language servers assume a normal Linux box; a Nix container is
+not one. Every seam below fails **silently** — the build succeeds and the error
+only appears when a kernel starts. If R packages are "missing" or a kernel will
+not start, check these in order:
+
+1. **Session environment ownership.** sshd's `PermitUserEnvironment` reads
+   `~/.ssh/environment` only if it is owned by the login user (`dev`). The
+   Dockerfile writes it and `chown`s it, and `entrypoint.sh` re-asserts the
+   owner. If it ends up root-owned, sshd silently ignores it: `R_LIBS_SITE` and
+   the `VSCODE_SERVER_*` vars never reach the session — R says "no package
+   called tidymodels" and the REH's glibc check fails.
+2. **Positron volume ownership.** The `myproject-positron-server` volume may be
+   seeded as root, but the client logs in as `dev` and must write
+   `.log`/`.token`/`.pid` plus `data/` and `extensions/`. `entrypoint.sh` does a
+   recursive `chown`. A root-owned volume surfaces as an empty
+   `connectionToken` → "Illegal argument: connectionToken".
+3. **`LD_LIBRARY_PATH` for the Python language server.** Its bundled
+   `ipykernel`/`zmq` is a generic manylinux wheel that needs `libstdc++.so.6`
+   at load time, but the container has no `/lib` or `/usr/lib`. The image sets
+   `LD_LIBRARY_PATH=/opt/positron-libs` (the flat FHS-ish dir from
+   `nix/positron-libs.nix`) so those libs resolve.
+4. **`ps`.** The REH and its install script use `ps`/`kill` for process
+   management; `procps` is in `system.nix` for it (the base image has no `ps`).
+
+## Production (static site)
+
+The same closure that powers the dev image renders the project into a static
+site, shipped as a tiny nginx image. This is the "final packaging": the dev
+environment is the interactive toolchain, prod is a reproducible build of its
+output.
+
+```sh
+./prod.sh                                  # build myproject:prod (needs the dev image)
+docker run --rm -p 8080:80 myproject:prod  # serve it
+# or: docker compose -f prod-compose.yml up -d
+```
+
+How it works (`prod.Dockerfile`, two stages):
+
+1. **`render`** — `FROM myproject-dev:latest`, copies the repo and runs
+   `quarto render`. All the weight (R, Quarto, pandoc, packages) stays in this
+   stage and is discarded.
+2. **`serve`** — `nginx:alpine` with only `_site/` copied in: a few tens of MB.
+
+The prod image is *not* a slimmed dev image — it is the rendered artifact of the
+same pin. To reproduce it, re-render with the same `nix/pin.nix` and source;
+the whole path stays deterministic. `prod.sh` swaps `.dockerignore.prod` in so
+the build context is the source (not `dist/`).
 
 ## Housekeeping
 
@@ -413,10 +500,20 @@ root-owned files in the repo:
 sudo chown -R $(id -u):$(id -g) .
 ```
 
+The usual culprit is running **`quarto render` as root** (for example inside
+`docker compose exec -u root myproject-dev nix-shell`, or a `sudo quarto
+render` on the host). Quarto writes `_site/`, `_freeze/`, `.quarto/` and the
+generated `NN.qmd` chapter files with the invoking user's owner — root there
+makes every later render as `dev` fail with `PermissionDenied` (`readdir`/`remove`
+on those paths). Render as `dev` (via `ssh`, or plain `docker compose exec`), or
+re-own those directories. They are all regenerable, so `rm -rf _site _freeze
+.quarto NN.qmd` (then re-render as `dev`) is also a valid fix.
+
 ## When copying into a project
 
 These files are private: add the same entries to your project's `.gitignore` if
 you do not want to commit them (e.g. `/Dockerfile`, `/nix/`, `/setup.sh`,
 `/build-image.sh`, `/docker-compose.yml`, `/default.nix`, `/entrypoint.sh`,
-`/patch-reh.sh`, `/check`, `/check-r-slim.sh`, `/Rprofile.site`, `/dist/`,
+`/patch-reh.sh`, `/prod.Dockerfile`, `/prod.sh`, `/prod-compose.yml`,
+`/.dockerignore.prod`, `/check`, `/check-r-slim.sh`, `/Rprofile.site`, `/dist/`,
 `/.github/workflows/check.yml`).

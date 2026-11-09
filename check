@@ -9,8 +9,9 @@
 #
 # What it guards, given the single-source pin (nix/pin.nix):
 #   1. nix/pin.nix exists and carries a nixpkgs archive URL + a sha256.
-#   2. nix/pkgs.nix and nix/system.nix import ./pin.nix (they must not
-#      hardcode the pin themselves).
+#   2. nix/pkgs.nix imports ./pin.nix (it must not hardcode the pin).
+#      nix/system.nix receives pkgs as a parameter, so it needs no direct
+#      pin reference; rule 3 still catches a hardcoded URL there.
 #   3. No other nix file carries a nixpkgs archive URL: the classic failure
 #      — bumping the date in one place and forgetting the other — cannot
 #      come back.
@@ -52,13 +53,12 @@ pin_url=$(printf '%s\n' "$code" | grep -oE "$url_re" | head -1 || true)
 pin_sha=$(printf '%s\n' "$code" | grep -oE "$sha_re" | head -1 || true)
 [ -n "$pin_sha" ] || die "no sha256 found in $pin_file"
 
-# 2. pkgs.nix and system.nix must import the pin, never carry it.
-for spec in "nix/pkgs.nix:nix/ToEdit_pkgs.nix" \
-            "nix/system.nix:nix/ToEdit_system.nix"; do
-    f=$(resolve "${spec%%:*}" "${spec##*:}") \
-        || die "not found: ${spec%%:*} (nor its ToEdit_ version)"
-    grep -q './pin.nix' "$f" || die "$f does not import ./pin.nix (single source broken)"
-done
+# 2. pkgs.nix must import the pin, never carry it. (system.nix receives
+#    pkgs as a parameter, so it has no direct pin reference; rule 3 still
+#    catches a hardcoded URL there.)
+f=$(resolve nix/pkgs.nix nix/ToEdit_pkgs.nix) \
+    || die "not found: nix/pkgs.nix (nor its ToEdit_ version)"
+grep -q './pin.nix' "$f" || die "$f does not import ./pin.nix (single source broken)"
 
 # 3. no duplicate pin anywhere else under nix/ (comment lines ignored)
 for f in nix/*.nix; do

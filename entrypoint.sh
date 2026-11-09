@@ -36,6 +36,16 @@ chmod 700 /var/empty /home/dev/.ssh
 # Owned by the dev user; already set at build time, ensured here in case the
 # home dir was created fresh. Non-recursive: don't chown the mounted repo.
 chown 1000:1000 /home/dev /home/dev/.ssh 2>/dev/null || true
+# sshd reads ~/.ssh/environment only if it is owned by the login user (see
+# sshd_config: PermitUserEnvironment yes). Chown it too, else R_LIBS_SITE and
+# the Positron VSCODE_SERVER_* vars never reach the session.
+[ -f /home/dev/.ssh/environment ] && \
+    chown 1000:1000 /home/dev/.ssh/environment 2>/dev/null || true
+# The Positron REH volume can be seeded as root; the client logs in as `dev`
+# and must write .log/.token/.pid and the data/ + extensions/ dirs. chown is
+# metadata-only, so giving dev the tree is cheap and lets the server start.
+mkdir -p /home/dev/.positron-server
+chown -R 1000:1000 /home/dev/.positron-server 2>/dev/null || true
 
 [ -f /etc/ssh/ssh_host_ed25519_key ] || \
     /opt/system/bin/ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key

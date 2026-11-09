@@ -33,28 +33,33 @@ let
     ps.ipykernel
     ps."jupyter-core"
     ps.nbconvert
+    # quarto's jupyter engine (share/jupyter/jupyter.py) does `import yaml`;
+    # without it a jupyter-engine qmd dies with ModuleNotFoundError: yaml.
+    ps.pyyaml
   ] ++ packages.pythonPackages ps);
   # quarto.override, not quarto: nixpkgs' default wrapper bakes its OWN
   # rWrapper (a full, unstripped R + rmarkdown) and its OWN python with the
   # whole `jupyter` metapackage. Both are set to null so quarto uses the slim
   # R and the python above from PATH instead.
-  quarto = pkgs.quarto.override { rWrapper = null; python3 = null; };
-  # git.override, not git: the defaults carry perl, python and man pages
-  # (~225 MB of runtime closure) an ssh-only dev container does not need.
-  git = pkgs.git.override {
-    perlSupport = false;
-    pythonSupport = false;
-    withManual = false;
-  };
-  # The tarball of nix/pin.nix, shipped in the store so the first `nix-shell`
-  # on a fresh container is instant instead of a ~80 MB download. Same
-  # url + sha256 => same store path as nix/pkgs.nix's fetchTarball => it is
-  # already there. Single source: pin edits happen ONLY in nix/pin.nix (this
-  # file and nix/pkgs.nix import it; ./check fails on any duplicate copy).
-  nixpkgsSrc = builtins.fetchTarball { inherit (import ./pin.nix) url sha256; };
-  nixpkgsSource = pkgs.runCommand "nixpkgs-source" { } ''
-    ln -s ${nixpkgsSrc} $out
-  '';
+  # The overrideAttrs patches a nixpkgs packaging bug (nixpkgs#519484):
+  # quarto 1.9.37 emits pandoc 3.8+'s `syntax-highlighting` option, but
+  # nixpkgs bundles it against pandoc 3.7.0.2, which does not know it, so
+  # `quarto render` of revealjs (and anything with highlighting) dies with
+  # "Unknown option syntax-highlighting". Point the constant back at the 3.7
+  # name until nixpkgs ships a matching pandoc.
+  quarto = (pkgs.quarto.override { rWrapper = null; python3 = null; }).overrideAttrs (old: {
+    postPatch = (old.postPatch or "") + ''
+      substituteInPlace bin/quarto.js \
+        --replace-fail 'kSyntaxHighlighting = "syntax-highlighting"' 'kSyntaxHighlighting = "highlight-style"'
+    '';
+  });
+  # gitMinimal, not git.override: both drop perl, python, man pages and
+  # pcre2 (~225 MB of runtime closure) that an ssh-only dev container does
+  # not need, but a custom `git.override` changes the derivation hash, so it
+  # is NOT on cache.nixos.org and git compiles from source (running its own
+  # test suite). gitMinimal is a first-class package with the same flags, so
+  # it is pre-built and downloads instead of compiling.
+  git = pkgs.gitMinimal;
 in
   pkgs.buildEnv {
     name = "system-packages";
@@ -78,13 +83,15 @@ in
         tzdata
         # Positron remote: the REH launcher patchelfs its bundled node with
         # these (VSCODE_SERVER_CUSTOM_GLIBC_* env). sed/awk are for the
-        # client's serverSetup script.
+        # client's serverSetup script; procps gives the REH ps/kill for its
+        # process management.
         patchelf
         gnused
         gawk
-        gnugrep;
+        gnugrep
+        procps;
       # TO EDIT — main languages and tools. Add other languages here
       # (julia, rustup, ...) when you need them.
-      inherit R python quarto git nixpkgsSource;
+      inherit R python quarto git;
     };
   }

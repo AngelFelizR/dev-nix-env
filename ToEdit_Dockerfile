@@ -86,7 +86,12 @@ COPY Rprofile.site /opt/Rprofile.site
 # The VSCODE_SERVER_* vars are for Positron Remote SSH: the REH launcher
 # patchelfs its bundled node against the closure's glibc with them, and the
 # requirements check skips itself when the first one is set.
+# LD_LIBRARY_PATH: the Python language server ships ipykernel/zmq as a generic
+# manylinux wheel that needs libstdc++.so.6/libgcc_s.so.1 at load time, and
+# this container has no /lib or /usr/lib. Pointing the loader at
+# /opt/positron-libs (the flat FHS-ish lib dir) makes those findable.
 ENV PATH="/opt/system/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/positron-libs" \
     LOCALE_ARCHIVE="/opt/system/lib/locale/locale-archive" \
     LANG="en_US.UTF-8" \
     LC_ALL="en_US.UTF-8" \
@@ -120,10 +125,12 @@ RUN mkdir -p /usr/bin && \
       'FONTCONFIG_FILE=/opt/system/etc/fonts/fonts.conf' \
       'FONTCONFIG_PATH=/opt/system/etc/fonts' \
       'XDG_DATA_DIRS=/opt/system/share' \
+      'LD_LIBRARY_PATH=/opt/positron-libs' \
       'VSCODE_SERVER_CUSTOM_GLIBC_LINKER=/opt/positron-libs/ld-linux-x86-64.so.2' \
       'VSCODE_SERVER_CUSTOM_GLIBC_PATH=/opt/positron-libs' \
       'VSCODE_SERVER_PATCHELF_PATH=/opt/system/bin/patchelf' \
       > /home/dev/.ssh/environment && \
+    chown 1000:1000 /home/dev/.ssh/environment && \
     chmod 600 /home/dev/.ssh/environment
 
 COPY entrypoint.sh /entrypoint.sh

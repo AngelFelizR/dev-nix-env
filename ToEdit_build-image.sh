@@ -86,7 +86,7 @@ awk '
         if (path in keep) { print path; print hash; print refc; print ""; print n; printf "%s", refs }
     }
 ' dist/closure dist/db.raw > dist/db.dump
-rm dist/db.raw
+rm -f dist/db.raw
 
 # The container wrote dist/ as root; hand it back to the invoking user.
 docker run --rm -v "$PWD/dist:/d" alpine \
